@@ -135,3 +135,51 @@ export const getInvoice = async (req, res) => {
   if (!inv) return res.status(404).json({ message: 'Invoice not found' });
   res.json(inv);
 };
+
+export const statsInvoices = async (req, res) => {
+  try {
+    const days = Math.max(1, Number(req.query.days || 30));
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() - (days - 1));
+
+    const [totalInvoices, totalSalesAgg, perDay] = await Promise.all([
+      Invoice.countDocuments({}),
+      Invoice.aggregate([{ $group: { _id: null, total: { $sum: '$grandTotal' } } }]),
+      Invoice.aggregate([
+        { $match: { createdAt: { $gte: start } } },
+        {
+          $group: {
+            _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+            total: { $sum: '$grandTotal' },
+            count: { $sum: 1 }
+          }
+        },
+        { $sort: { _id: 1 } }
+      ])
+    ]);
+
+    const totalSales = totalSalesAgg?.[0]?.total || 0;
+
+    // Fill missing days with zeros so the chart is continuous
+    const map = new Map(perDay.map(d => [d._id, { total: Number(d.total || 0), count: Number(d.count || 0) }]));
+    const series = [];
+    const cursor = new Date(start);
+    for (let i = 0; i < days; i++) {
+      const key = cursor.toISOString().slice(0, 10); // YYYY-MM-DD
+      const m = map.get(key);
+      series.push({ date: key, total: m?.total || 0, count: m?.count || 0 });
+      cursor.setDate(cursor.getDate() + 1);
+    }
+
+    res.json({
+      days,
+      totalInvoices: Number(totalInvoices || 0),
+      totalSales: Number(totalSales || 0),
+      series
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ message: 'Failed to load invoice stats' });
+  }
+};
